@@ -26,26 +26,42 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.ensemble import RandomForestRegressor
 from matplotlib import pyplot
 
-
 import kraken_libs
+
+#--------------- get ohlc fom kraken 
+def get_ohlc(crypto_pair, interval):
+    asset_df = kraken_libs.kraken_ohlc_lib.main(crypto_pair, interval) 
+    print(asset_df)
+
+    return asset_df
 
 #--------------- new column with the future price
 def newcol_future_price(asset_df, future_days):
-    asset_df[str(future_days)+'_Interval_Price_Forecast'] = asset_df[['Close']].shift(-future_days)
+    asset_df[str(future_days)+'_Price_Forecast'] = asset_df[['Close']].shift(-future_days)
+    asset_df.fillna(method='ffill', inplace=True) #  take the last value seen for a column
+    #asset_df.fillna(0, inplace=True) #  take the last value seen for a column
+
     print(asset_df)
+    print(f"\n asset_df.shape = {asset_df.shape}")
+
 
     return asset_df
 
 #--------------- create X and y 
 def create_X_y(asset_df, future_days):
 
-    X = np.array(asset_df[['Close']])
-    X = X[:asset_df.shape[0] - future_days]  # delete last 5 rows NaN from shift
-    print(X); print()
+    X = np.array(asset_df[['Close']])   # [[]] we want two dimensions array
+    #X = X[:asset_df.shape[0] - future_days]  # delete last rows NaN from shift
+    print(X); 
+    print(X.shape)
+    print()
+    g = input("\nX   press key : "); print (g)
 
-    y = np.array(asset_df[[str(future_days)+'_Interval_Price_Forecast']])
-    y = y[:asset_df.shape[0] - future_days]  # delete last 5 rows NaN from shift
+    y = np.array(asset_df[str(future_days)+'_Price_Forecast']) # [] we want one dimensions array
+    #y = y[:-future_days]  # delete last rows NaN from shift
     print(y)
+    print(y.shape)
+    g = input("\ny   press key : "); print (g)
 
     return X, y
 
@@ -53,30 +69,120 @@ def create_X_y(asset_df, future_days):
 def split_training_test(X, y):
 
     from sklearn.model_selection import train_test_split 
-    x_train, x_test, y_train, y_test = train_test_split (X, y, test_size = 0.2)
+    x_train, x_test, y_train, y_test = train_test_split (X, y, test_size = 0.1, shuffle=False) 
+    # test_size 10% better result than 20%
+    # kraken provides 720 candels, maybe better to get the history with ticks? 
+    # shuffle = false to keep sequential (big difference), we want x_test + y_test from the end
+    # verify if shuffle = off takes takes x_test y_test  from the end (this is what we want)
 
-    print(); print(y_train)
+    #x_test = np.array([[1724.10, 1794.95, 1813.35, 1997.56, 1938.75, 1817.91, 1833.12, 1774.62, 1804.22, 1804.35]])
+    #x_test = x_test.reshape(10,1)   #1 col 10 rows
+    #y_test = np.array([1860.14, 1815.60, 1792.58, 1789.21, 1661.66, 1528.13, 1434.11, 1210.85, 1212.60, 1237.54])
+
+    #print(); print(y_train)
+    print(f"\nx_train shape = {x_train.shape}")
+    print(f"x_test shape = {x_test.shape}")
+    print(f"y_train shape = {y_train.shape}")
+    print(f"y_test shape = {y_test.shape}")
+    print(f"x_test dim = {x_test.ndim}")
+    print(f"y_test dim = {y_test.ndim}")
+    g = input("shape  press key : "); print (g)
 
     return x_train, x_test, y_train, y_test
 
 
 
 #---------------  create SVR model   
-def create_svr_model (x_train, y_train):
+def create_svr_model (x_train, y_train, x_test, y_test):
 
     from sklearn.svm import SVR
     svr_rbf = SVR(kernel='rbf', C =1e3, gamma=0.00001)
     svr_rbf.fit(x_train, y_train)
 
-    return 
+    svr_rbf_confidence = svr_rbf.score(x_test, y_test)
+    print(f"svr_rbf_confidence = {svr_rbf_confidence}")
+    g = input("svr_rbf_confidence  press key : "); print (g)
+
+    # manual entry of last prices, skip previous x_test
+    # Each price will pridct as many days as future_days variable
+    #x_test = np.array([[1815,1792,1789,1661,1528]])
+    #x_test = np.array([[1434]])
+    #x_test = x_test.reshape(5,1)   #1 col 10 rows
+       
+    #svr_prediction = svr_rbf.predict([[1661]]) #only valid for a single price?
+    svr_prediction = svr_rbf.predict(x_test)
+ 
+    return svr_prediction
+
+#---------------  summary & plot   
+def summary_plot (x_test, y_test, svr_prediction, future_days):
+
+    summary_df = pd.DataFrame(data=x_test, columns=['x_test'])
+    summary_df['y_test'] = y_test
+    summary_df['forecast1'] = svr_prediction
+    summary_df['forecast2'] = summary_df['forecast1'].shift(-future_days)
+    summary_df['gap'] = summary_df['forecast2'] - summary_df['y_test']
+    print(summary_df)
+
+    plt.figure(figsize=(12,4))
+    #plt.plot(summary_df['x_test'], label='x_test', lw=2, alpha=.7)
+    plt.plot(summary_df['y_test'], label='y_test', lw=2, alpha=.7)
+    #plt.plot(summary_df['forecast1'], label='forecast1', lw=2, alpha=.7)
+    plt.plot(summary_df['forecast2'], label='forecast2', lw=2, alpha=.7)
+    plt.title('Prediction vs Actual')
+    plt.ylabel('Price in USDT')
+    plt.xlabel('Time')
+    plt.legend()
+    plt.xticks(rotation=45)
+    plt.show()
+
+    return svr_prediction
+
+
+
+
+#---------------- main
+def main(crypto_pair='ETHUSDT', interval='1440'):
+
+    future_days = 1
+ 
+    ''' get ohlc from kraken '''
+    asset_df = get_ohlc(crypto_pair, interval) 
+    g = input("\nohlc   press key : "); print (g)
+
+    ''' create a new column with the future price '''
+    asset_df = newcol_future_price(asset_df, future_days)
+    g = input("\nnew column   press key : "); print (g)
+
+    ''' create independent variable X and dependent variable y '''
+    X, y = create_X_y(asset_df, future_days)
+    g = input("\ncreate_X_y   press key : "); print (g)
+
+    ''' split training and test sets  '''
+    x_train, x_test, y_train, y_test = split_training_test(X, y)
+    g = input("\nsplit   press key : "); print (g)
 
     ''' create the model  '''
-    
+    svr_prediction = create_svr_model (x_train, y_train, x_test, y_test)
     g = input("\ncreate_svr_model   press key : "); print (g)
 
+    ''' summary & plot '''
+    summary_plot (x_test, y_test, svr_prediction, future_days)
+    g = input("\nsummary_plot   press key : "); print (g)
+
+    return
 
 
- #---------------- back testing 
+
+#------------- 
+if __name__ == "__main__":
+  main()
+  g = input("\n\n\n End Program .... Press any key : "); print (g)
+
+
+
+'''
+#---------------- back testing 
 def back_testing(y, yhat, last_date_ohlc):
 
     tp_limit = 0.1
@@ -127,43 +233,4 @@ def back_testing(y, yhat, last_date_ohlc):
     print("today date is: ", today)
 
 
-#----------------
-def main(crypto_pair='ETHUSDT', interval='1440'):
-
-    future_days = 5
- 
-    ''' get ohlc from kraken '''
-    asset_df = kraken_libs.kraken_ohlc_lib.main(crypto_pair, interval) 
-    print(asset_df)
-    g = input("\nohlc   press key : "); print (g)
-
-    ''' create a new column with the future price '''
-    asset_df = newcol_future_price(asset_df, future_days)
-    g = input("\nnew column   press key : "); print (g)
-
-    ''' create independent variable X and dependent variable y '''
-    X, y = create_X_y(asset_df, future_days)
-    g = input("\ncreate_X_y   press key : "); print (g)
-
-    ''' split training and test sets  '''
-    x_train, x_test, y_train, y_test = split_training_test(X, y)
-    g = input("\nsplit   press key : "); print (g)
-
-    ''' create the model  '''
-    create_svr_model (x_train, y_train)
-    g = input("\ncreate_svr_model   press key : "); print (g)
-
-    return
-
-
-
-
-
-
-#------------- 
-if __name__ == "__main__":
-  main()
-  g = input("\n\n\n End Program .... Press any key : "); print (g)
-
-
-
+'''
